@@ -52,11 +52,37 @@ std::vector<Feature> Renderer::queryRenderedFeatures(const ScreenBox& box, const
             options
     );
 }
+    
+std::vector<Feature> Renderer::queryRenderedSourceFeatures(const ScreenBox& box) const {
+    return impl->queryShapeAnnotations(
+           {
+               box.min,
+               {box.max.x, box.min.y},
+               box.max,
+               {box.min.x, box.max.y},
+               box.min
+    });
+}
 
 AnnotationIDs Renderer::queryPointAnnotations(const ScreenBox& box) const {
     RenderedQueryOptions options;
     options.layerIDs = {{ AnnotationManager::PointLayerID }};
     auto features = queryRenderedFeatures(box, options);
+    std::set<AnnotationID> set;
+    for (auto &feature : features) {
+        assert(feature.id);
+        assert(feature.id->is<uint64_t>());
+        assert(feature.id->get<uint64_t>() <= std::numeric_limits<AnnotationID>::max());
+        set.insert(static_cast<AnnotationID>(feature.id->get<uint64_t>()));
+    }
+    AnnotationIDs ids;
+    ids.reserve(set.size());
+    std::move(set.begin(), set.end(), std::back_inserter(ids));
+    return ids;
+}
+
+AnnotationIDs Renderer::queryShapeAnnotations(const ScreenBox& box) const {
+    auto features = queryRenderedSourceFeatures(box);
     std::set<AnnotationID> set;
     for (auto &feature : features) {
         assert(feature.id);

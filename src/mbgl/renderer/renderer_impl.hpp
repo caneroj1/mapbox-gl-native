@@ -49,6 +49,7 @@ public:
 
     std::vector<Feature> queryRenderedFeatures(const ScreenLineString&, const RenderedQueryOptions&) const;
     std::vector<Feature> querySourceFeatures(const std::string& sourceID, const SourceQueryOptions&) const;
+    std::vector<Feature> queryShapeAnnotations(const ScreenLineString&) const;
 
     void onLowMemory();
     void dumDebugLogs();
