@@ -1,17 +1,25 @@
 package com.mapbox.mapboxsdk.maps;
 
+import android.animation.Animator;
+import android.animation.AnimatorListenerAdapter;
+import android.animation.ValueAnimator;
 import android.content.Context;
+import android.graphics.Point;
 import android.graphics.PointF;
 import android.location.Location;
 import android.os.Handler;
 import android.support.annotation.Nullable;
 import android.support.v4.view.GestureDetectorCompat;
 import android.support.v4.view.ScaleGestureDetectorCompat;
+import android.support.v4.view.animation.FastOutLinearInInterpolator;
+import android.support.v4.view.animation.FastOutSlowInInterpolator;
 import android.view.InputDevice;
 import android.view.MotionEvent;
 import android.view.ScaleGestureDetector;
 import android.view.VelocityTracker;
 import android.view.ViewConfiguration;
+import android.view.animation.AccelerateDecelerateInterpolator;
+import android.view.animation.AnticipateOvershootInterpolator;
 
 import com.almeros.android.multitouch.gesturedetectors.RotateGestureDetector;
 import com.almeros.android.multitouch.gesturedetectors.ShoveGestureDetector;
@@ -22,6 +30,8 @@ import com.mapbox.services.android.telemetry.MapboxEvent;
 import com.mapbox.services.android.telemetry.MapboxTelemetry;
 import com.mapbox.services.android.telemetry.utils.MathUtils;
 import com.mapbox.services.android.telemetry.utils.TelemetryUtils;
+
+import timber.log.Timber;
 
 import static com.mapbox.mapboxsdk.maps.MapboxMap.OnCameraMoveStartedListener.REASON_API_GESTURE;
 
@@ -459,6 +469,8 @@ final class MapGestureDetector {
   private class ScaleGestureListener extends ScaleGestureDetector.SimpleOnScaleGestureListener {
 
     private float scaleFactor = 1.0f;
+    private PointF scalePointBegin;
+    private boolean animating;
 
     // Called when two fingers first touch the screen
     @Override
@@ -468,6 +480,7 @@ final class MapGestureDetector {
       }
 
       recentScaleGestureOccurred = true;
+      scalePointBegin = new PointF(detector.getFocusX(), detector.getFocusY());
       scaleBeginTime = detector.getEventTime();
       MapboxTelemetry.getInstance().pushEvent(MapboxEventWrapper.buildMapClickEvent(
         getLocationFromGesture(detector.getFocusX(), detector.getFocusY()),
@@ -477,25 +490,40 @@ final class MapGestureDetector {
 
     // Called when fingers leave screen
     @Override
-    public void onScaleEnd(ScaleGestureDetector detector) {
+    public void onScaleEnd(final ScaleGestureDetector detector) {
       double velocityXY = Math.abs(velocityTracker.getYVelocity()) + Math.abs(velocityTracker.getXVelocity());
       if (velocityXY > MapboxConstants.VELOCITY_THRESHOLD_IGNORE_FLING / 2) {
-        long animationTime = (long)(Math.log(velocityXY) * 88);
-        double zoomAddition = (float) (Math.log(velocityXY) / 7.7);
+        animating = true;
+        long animationTime = (long) (Math.log(velocityXY) * 66);
+        double zoomAddition = (float) (Math.log(velocityXY) / 2.75);
         if (!wasZoomingIn) {
           zoomAddition = -zoomAddition;
         }
-        transform.zoom(zoomAddition, new PointF(detector.getFocusX(), detector.getFocusY()), animationTime);
-        handler.postDelayed(new Runnable() {
+        double currentZoom = transform.getRawZoom();
+        ValueAnimator zoomAnimator = ValueAnimator.ofFloat((float) currentZoom, (float) (currentZoom + zoomAddition));
+        zoomAnimator.setDuration(animationTime);
+        zoomAnimator.setInterpolator(new FastOutSlowInInterpolator());
+        zoomAnimator.addUpdateListener(new ValueAnimator.AnimatorUpdateListener() {
+
+          PointF point = new PointF(detector.getFocusX(),detector.getFocusY());
           @Override
-          public void run() {
+          public void onAnimationUpdate(ValueAnimator animation) {
+            transform.setZoom((Float) animation.getAnimatedValue(), scalePointBegin);
+          }
+        });
+        zoomAnimator.addListener(new AnimatorListenerAdapter() {
+          @Override
+          public void onAnimationEnd(Animator animation) {
+            super.onAnimationEnd(animation);
+            animating = false;
             scaleGestureOccurred = false;
             scaleBeginTime = 0;
             scaleFactor = 1.0f;
             cameraChangeDispatcher.onCameraIdle();
           }
-        }, animationTime);
-      } else {
+        });
+        zoomAnimator.start();
+      } else if (!animating) {
         scaleGestureOccurred = false;
         scaleBeginTime = 0;
         scaleFactor = 1.0f;
@@ -563,7 +591,7 @@ final class MapGestureDetector {
       } else {
         // around gesture
         transform.zoomBy(Math.log(detector.getScaleFactor()) / Math.log(Math.PI / 2),
-          detector.getFocusX(), detector.getFocusY());
+          scalePointBegin.x, scalePointBegin.y);
       }
       return true;
     }
@@ -579,6 +607,7 @@ final class MapGestureDetector {
 
     private long beginTime = 0;
     private boolean started = false;
+    private boolean animating = false;
 
     // Called when two fingers first touch the screen
     @Override
@@ -594,37 +623,53 @@ final class MapGestureDetector {
       return true;
     }
 
+
     // Called when the fingers leave the screen
     @Override
     public void onRotateEnd(RotateGestureDetector detector) {
       double angularVelocity = ((detector.getFocusX() * velocityTracker.getYVelocity())
-              + (detector.getFocusY() * velocityTracker.getXVelocity()))
-              / (Math.pow(detector.getFocusX(), 2) + Math.pow(detector.getFocusY(), 2));
-      if (Math.abs(angularVelocity) > 0.001 && rotateGestureOccurred) {
-        long animationTime = (long) (Math.abs(angularVelocity) * 333);
-        double rotateAddition = Math.abs(angularVelocity) * 33;
+        + (detector.getFocusY() * velocityTracker.getXVelocity()))
+        / (Math.pow(detector.getFocusX(), 2) + Math.pow(detector.getFocusY(), 2));
+      if (Math.abs(angularVelocity) > 0.001 && rotateGestureOccurred && !animating) {
+        Timber.e("YES animation");
+        animating = true;
+        long animationTime = (long) (Math.abs(angularVelocity) * 165);
+        double rotateAddition = Math.abs(angularVelocity) * 55; //33;
         if (!wasClockwiseRotating) {
           rotateAddition = -rotateAddition;
         }
-        totalAngle += rotateAddition;
-        transform.setBearing(transform.getRawBearing() + rotateAddition, detector.getFocusX(), detector.getFocusY(),
-                animationTime);
-        handler.postDelayed(new Runnable() {
+
+        double currentRotation = transform.getRawBearing();
+
+        ValueAnimator bearingAnimator = ValueAnimator.ofFloat((float) currentRotation, (float) (currentRotation + rotateAddition));
+        bearingAnimator.setDuration(animationTime);
+        bearingAnimator.setInterpolator(new FastOutSlowInInterpolator());
+//        bearingAnimator.setInterpolator(new FastOutLinearInInterpolator());
+        bearingAnimator.addUpdateListener(new ValueAnimator.AnimatorUpdateListener() {
           @Override
-          public void run() {
-            // notify camera change listener
+          public void onAnimationUpdate(ValueAnimator animation) {
+            transform.setBearing((Float) animation.getAnimatedValue());
+          }
+        });
+        bearingAnimator.addListener(new AnimatorListenerAdapter() {
+          @Override
+          public void onAnimationEnd(Animator animation) {
+            super.onAnimationEnd(animation);
             beginTime = 0;
-            totalAngle = 0.0f;
             started = false;
+            animating = false;
             rotateGestureOccurred = false;
           }
-        }, animationTime);
-      } else {
+        });
+        bearingAnimator.start();
+      } else if (!animating) {
+        Timber.e("No animation");
         // notify camera change listener
         beginTime = 0;
-        totalAngle = 0.0f;
         started = false;
         rotateGestureOccurred = false;
+      } else {
+        Timber.e("Ignore animation");
       }
     }
 
